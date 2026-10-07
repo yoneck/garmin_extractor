@@ -1,0 +1,22 @@
+# Secrets and session data
+.env
+*.log
+*.fit
+*.csv
+__pycache__/
+*.pyc
+garmin_session.json
+garmin_credentials.json
+gar_logs/
+garmin_data/_sessions/
+garmin_data/context/
+
+# Test and cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+PUBLISH_INSTRUCTIONS.md
