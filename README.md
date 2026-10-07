@@ -61,24 +61,29 @@ To force a fresh MFA login, pass `--no-session` (discards the saved session).
 
 The extractor uses absolute imports (`from gar...`), so `PYTHONPATH` must point at the project root.
 
-#### Recommended: `./run.sh`
+### How to run
 
+The extractor uses absolute imports (`from gar...`), so `PYTHONPATH` must point at the project root.
+
+#### Linux / macOS / WSL
+Use the provided shell script:
 ```bash
-cd gar_v2
 ./run.sh --days 30
 ```
 
-`run.sh` activates the venv, sets `PYTHONPGPATH`, and forwards all arguments to the extractor.
-
-#### Alternatively, run manually:
-
-```bash
-cd gar_v2
-source venv/bin/activate
-PYTHONPATH=. python gar/cli/main.py --days 30
+#### Windows (CMD)
+Use the provided batch file:
+```cmd
+run_windows.bat --days 30
 ```
 
-> `python -m gar` does **not** work yet. Use `./run.sh` or the manual command above.
+#### Windows (PowerShell)
+Use the provided PowerShell script:
+```powershell
+./run_windows.ps1 --days 30
+```
+
+> `python -m gar` does **not** work yet. Use the scripts above to ensure `PYTHONPATH` is correctly configured.
 
 #### Common flags
 

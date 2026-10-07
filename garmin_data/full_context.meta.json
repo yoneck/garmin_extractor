@@ -1,18 +1,18 @@
 {
-  "generated_at": "2026-10-05T20:16:51.419923+02:00",
+  "generated_at": "2026-10-07T11:40:16.904419+02:00",
   "source_dir": "/mnt/c/data/opencode/gar/gar_v2/garmin_data",
   "output": "/mnt/c/data/opencode/gar/gar_v2/garmin_data/full_context.jsonl",
-  "activity_count": 26825,
-  "activities_with_details": 1399,
+  "activity_count": 27301,
+  "activities_with_details": 1852,
   "activity_detail_counts": {
-    "laps": 16788,
-    "splits": 12591,
-    "power_zones": 1388,
-    "hr_zones": 5560
+    "laps": 22224,
+    "splits": 16668,
+    "power_zones": 1524,
+    "hr_zones": 7348
   },
   "biometric": {
     "sleep_summary": {
-      "rows": 1033,
+      "rows": 1044,
       "columns": [
         "timestamp",
         "calendarDate",
@@ -93,7 +93,7 @@
       ]
     },
     "hrv": {
-      "rows": 22717,
+      "rows": 23149,
       "columns": [
         "timestamp",
         "hrvDate",
@@ -170,7 +170,7 @@
       ]
     },
     "stress": {
-      "rows": 163,
+      "rows": 165,
       "columns": [
         "timestamp",
         "stressDate",
@@ -219,7 +219,7 @@
       ]
     },
     "body_battery": {
-      "rows": 323,
+      "rows": 328,
       "columns": [
         "timestamp",
         "bodyBatteryFilledIn",
@@ -280,7 +280,7 @@
       ]
     },
     "body_composition": {
-      "rows": 734,
+      "rows": 758,
       "columns": [
         "timestamp",
         "calendarDate",
@@ -328,9 +328,9 @@
           "sourceType": "MANUAL"
         },
         {
-          "timestamp": 1709104044,
-          "calendarDate": "2024-02-28",
-          "weightKg": 86.3,
+          "timestamp": 1705648036,
+          "calendarDate": "2024-01-19",
+          "weightKg": 88.8,
           "bmi": null,
           "bodyFatPct": null,
           "bodyWaterPct": null,
