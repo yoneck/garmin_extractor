@@ -68,10 +68,10 @@ The extractor uses absolute imports (`from gar...`), so `PYTHONPATH` must point 
 #### Linux / macOS / WSL
 Use the provided shell script:
 ```bash
-./run.sh --days 3ESS
+./run.sh --days 30
 ```
 
-#### Windows (CMD)
+#### Windows (CMD/Batch)
 Use the provided batch file:
 ```cmd
 run_windows.bat --days 30
