@@ -34,6 +34,8 @@ DEDUP_KEYS: dict[str, tuple[str, ...] | None] = {
     "activity_powers": ("activityId", "zone"),
     "activity_power_metrics": ("activityId", "lapIndex"),
     "activity_zones": ("activityId", "zoneType", "zone"),
+    "activity_streams": ("activityId", "sampleIndex"),
+    "activity_stream_stats": ("activityId",),
     "sleep_summary": ("timestamp",),
     "sleep_stages": ("sleepId", "stageIndex"),
     "sleep_samples": ("sleepId", "kind", "timestamp"),
