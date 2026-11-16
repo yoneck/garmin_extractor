@@ -72,6 +72,18 @@ def test_future_timestamp_rejected():
         assert storage.latest_timestamp("stress") is None
 
 
+def test_future_timestamp_allowed_for_planned_tables():
+    with __import__("tempfile").TemporaryDirectory() as tmp:
+        storage = CsvStorage(Path(tmp))
+        future = int((datetime.now(timezone.utc) + timedelta(days=10)).timestamp())
+        storage.sync(
+            "workout_adherence",
+            [{"scheduledId": "1", "timestamp": future, "status": "upcoming"}],
+            allow_future=True,
+        )
+        assert storage.latest_timestamp("workout_adherence") is not None
+
+
 def test_latest_timestamp_uses_max_not_min():
     with __import__("tempfile").TemporaryDirectory() as tmp:
         storage = CsvStorage(Path(tmp))

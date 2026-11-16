@@ -58,6 +58,7 @@ DEDUP_KEYS: dict[str, tuple[str, ...] | None] = {
     "race_predictions": ("date", "distance"),
     "scores": ("date", "scoreType"),
     "workouts": ("workoutId",),
+    "workout_steps": ("workoutId", "stepIndex"),
     "workout_adherence": ("scheduledId",),
     "weather": ("activityId",),
     "strength_sets": ("activityId", "setIndex"),
@@ -144,9 +145,18 @@ class CsvStorage:
         self.timezone_name = timezone_name
 
     # -- public API --------------------------------------------------------
-    def sync(self, data_type: str, records: list[dict]) -> int:
-        """Merge records partitioned by month (UTC legacy layout)."""
-        frame = self._prepare(data_type, records)
+    def sync(
+        self,
+        data_type: str,
+        records: list[dict],
+        allow_future: bool = False,
+    ) -> int:
+        """Merge records partitioned by month (UTC legacy layout).
+
+        ``allow_future`` is for planned/future-dated tables (scheduled
+        workouts) where a future timestamp is legitimate.
+        """
+        frame = self._prepare(data_type, records, allow_future=allow_future)
         if frame.empty:
             return 0
         written = 0
@@ -243,7 +253,12 @@ class CsvStorage:
         folder.mkdir(parents=True, exist_ok=True)
         return folder / f"{period_str}.csv"
 
-    def _prepare(self, data_type: str, records: list[dict]) -> pd.DataFrame:
+    def _prepare(
+        self,
+        data_type: str,
+        records: list[dict],
+        allow_future: bool = False,
+    ) -> pd.DataFrame:
         if not records:
             return pd.DataFrame()
         frame = pd.DataFrame(records)
@@ -264,7 +279,9 @@ class CsvStorage:
                 return frame
             dates_utc = pd.to_datetime(frame["timestamp"], unit="s", utc=True)
             future_limit = _utcnow() + timedelta(days=self.max_future_days)
-            future = dates_utc > future_limit
+            future = pd.Series(False, index=frame.index)
+            if not allow_future:
+                future = dates_utc > future_limit
             if future.any():
                 self.quarantine(
                     data_type,
