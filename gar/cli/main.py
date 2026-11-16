@@ -231,6 +231,10 @@ def main(argv: list[str] | None = None) -> int:
         return log_main(argv[1:], data_dir=_default_data_dir())
     if argv and argv[0] == "coverage":
         return _coverage_main(argv[1:])
+    if argv and argv[0] == "lake":
+        from gar.lake.cli import main as lake_main
+
+        return lake_main(argv[1:], data_dir=_default_data_dir())
 
     args = _build_parser().parse_args(argv)
 
