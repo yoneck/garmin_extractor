@@ -15,6 +15,7 @@ from gar.lake.db import (
 from gar.lake.derive import derive_all
 from gar.lake.export import export_parquet
 from gar.lake.ingest import dataset_status, discover_datasets, ingest_all
+from gar.lake.state import get_sync_state
 from gar.lake.validate import quarantine_count, validate_all
 
 
@@ -30,6 +31,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ingest = sub.add_parser("ingest", help="Load CSV files into raw_* tables.")
     ingest.add_argument("--datasets", help="Comma-separated subset.")
+    ingest.add_argument(
+        "--full-refresh",
+        dest="full_refresh",
+        action="store_true",
+        help="Re-read CSVs even when the file fingerprint is unchanged.",
+    )
     ingest.add_argument("--json", dest="as_json", action="store_true")
 
     sub.add_parser("derive", help="Build curated fact_* tables and flags.")
@@ -52,6 +59,12 @@ def _build_parser() -> argparse.ArgumentParser:
     build.add_argument("--datasets", help="Comma-separated subset.")
     build.add_argument("--validate", dest="do_validate", action="store_true")
     build.add_argument("--export", dest="do_export", action="store_true")
+    build.add_argument(
+        "--full-refresh",
+        dest="full_refresh",
+        action="store_true",
+        help="Re-read CSVs even when the file fingerprint is unchanged.",
+    )
 
     return parser
 
@@ -85,9 +98,17 @@ def _status(con, data_dir: Path) -> dict:
         "fact_flag",
     ):
         curated[table] = row_count(con, table) if table_exists(con, table) else 0
+    sync_rows = []
+    for row in datasets:
+        state = get_sync_state(con, row["dataset"])
+        row["watermark_utc"] = state.get("watermark_utc") if state else None
+        row["ingested_at_utc"] = state.get("last_run_utc") if state else None
+        row["in_sync"] = bool(state and state.get("status") == "ok")
+        sync_rows.append(row)
     return {
         "database": str(lake_path(data_dir)),
-        "raw": datasets,
+        "schema_version": "3.0.0",
+        "raw": sync_rows,
         "curated": curated,
         "quarantine_rows": quarantine_count(con),
     }
@@ -130,7 +151,12 @@ def main(argv: list[str] | None = None, data_dir: Path | None = None) -> int:
                 if getattr(args, "datasets", None)
                 else None
             )
-            counts = ingest_all(con, data_dir, datasets=selected)
+            counts = ingest_all(
+                con,
+                data_dir,
+                datasets=selected,
+                full_refresh=getattr(args, "full_refresh", False),
+            )
             if getattr(args, "as_json", False):
                 print(json.dumps(counts, indent=2))
             return 0
@@ -179,7 +205,12 @@ def main(argv: list[str] | None = None, data_dir: Path | None = None) -> int:
             )
             print(f"Lake: {lake_path(data_dir)}")
             print(f"Datasets found: {', '.join(discover_datasets(data_dir)) or 'none'}")
-            ingest_all(con, data_dir, datasets=selected)
+            ingest_all(
+                con,
+                data_dir,
+                datasets=selected,
+                full_refresh=getattr(args, "full_refresh", False),
+            )
             derive_all(con)
             if args.do_validate:
                 validate_all(con)

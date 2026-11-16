@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS quarantine_record (
     source_file     VARCHAR
 );
 
+CREATE TABLE IF NOT EXISTS sync_state (
+    dataset         VARCHAR PRIMARY KEY,
+    watermark_utc   TIMESTAMP,
+    last_run_utc    TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    status          VARCHAR,
+    rows            BIGINT,
+    error           VARCHAR,
+    duration_s      DOUBLE,
+    fingerprint     VARCHAR
+);
+
 CREATE TABLE IF NOT EXISTS fact_flag (
     flag_id         VARCHAR PRIMARY KEY,
     date_local      DATE NOT NULL,

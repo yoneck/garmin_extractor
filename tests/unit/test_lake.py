@@ -14,6 +14,7 @@ from gar.lake.cli import main as lake_main
 from gar.lake.derive import derive_all
 from gar.lake.export import export_parquet
 from gar.lake.ingest import dataset_status, discover_datasets, ingest_all
+from gar.lake.state import files_fingerprint, get_sync_state
 from gar.lake.validate import quarantine_count, validate_all
 from gar.utils.storage import CsvStorage
 
@@ -427,3 +428,52 @@ def test_cli_ingest_subset(tmp_path: Path, capsys):
 def test_lake_path_is_deterministic(tmp_path: Path):
     assert lake_db.lake_path(tmp_path) == tmp_path / "garmin.duckdb"
     assert lake_db.safe_name("activity-laps!!") == "activity_laps"
+
+
+def test_ingest_is_incremental_and_tracks_watermark(tmp_path: Path):
+    _seed(tmp_path)
+    con = _connect(tmp_path)
+    try:
+        ingest_all(con, tmp_path, datasets=["activities"], verbose=False)
+        state = get_sync_state(con, "activities")
+        assert state is not None
+        assert state["status"] == "ok"
+        assert state["rows"] == 1
+        assert state["watermark_utc"] == datetime(2026, 11, 15, 8)
+
+        first_run = state["last_run_utc"]
+        ingest_all(con, tmp_path, datasets=["activities"], verbose=False)
+        assert get_sync_state(con, "activities")["last_run_utc"] == first_run
+
+        csv_files = sorted((tmp_path / "activities").glob("*.csv"))
+        assert csv_files
+        csv_path = csv_files[0]
+        frame = pd.read_csv(csv_path)
+        extra = frame.iloc[[0]].copy()
+        extra["activityId"] = "999"
+        extra["timestamp"] = T0 + 86400
+        pd.concat([frame, extra], ignore_index=True).to_csv(csv_path, index=False)
+        counts = ingest_all(con, tmp_path, datasets=["activities"], verbose=False)
+        assert counts["activities"] == 2
+        assert lake_db.row_count(con, "raw_activities") == 2
+
+        # Forced refresh bypasses the fingerprint cache.
+        ingest_all(
+            con,
+            tmp_path,
+            datasets=["activities"],
+            verbose=False,
+            full_refresh=True,
+        )
+        assert lake_db.row_count(con, "raw_activities") == 2
+    finally:
+        con.close()
+
+
+def test_files_fingerprint_changes_with_content(tmp_path: Path):
+    path = tmp_path / "x.csv"
+    path.write_text("a\n1\n")
+    first = files_fingerprint([path])
+    path.write_text("a\n1\n2\n")
+    assert files_fingerprint([path]) != first
+
