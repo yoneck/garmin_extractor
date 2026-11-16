@@ -5,33 +5,77 @@ from __future__ import annotations
 import argparse
 import glob
 import sys
-from datetime import datetime, timezone, timedelta
-
-import pandas as pd
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from gar.context.build_full_context import build as build_full_context_entry
+import pandas as pd
 
+from gar.context.build_full_context import build as build_full_context_entry
+from gar.utils.progress import ProgressBar
 
 
 def _build_full_context(data_dir: Path) -> None:
-    out = build_full_context_entry()
+    out = build_full_context_entry(data_dir)
     if out[1]:
         print(f"  full_context: {out[1]} activities -> {out[0]}")
+
+
+def _parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    parsed = datetime.strptime(value, "%Y-%m-%d")
+    return parsed.replace(tzinfo=timezone.utc)
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Extract training and health data from Garmin Connect.")
-    parser.add_argument("--mode", choices=["real", "test"], default="real",
-                        help="Real = live API, Test = mock client (default: real).")
-    parser.add_argument("--days", type=int, default=30,
-                        help="How many days back to extract (default: 30).")
-    parser.add_argument("--resume", type=int, default=None,
-                        metavar="N",
-                        help="Resume from the last extracted N days "
-                             "(default: re-download from --days).")
-    parser.add_argument("--activity-depth", action="store_true",
-                        help="Also download FIT files and per-activity laps/splits/zones.")
-    parser.add_argument("--no-session", action="store_true",
-                        help="Discard the saved Garmin session before logging in (force new MFA).")
+    parser = argparse.ArgumentParser(
+        description="Extract training and health data from Garmin Connect."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["real", "test"],
+        default="real",
+        help="Real = live API, Test = mock client (default: real).",
+    )
+    parser.add_argument("--days", type=int, default=30, help="Days back to extract (default: 30).")
+    parser.add_argument("--since", type=str, default=None, help="Start date YYYY-MM-DD (overrides --days).")
+    parser.add_argument("--until", type=str, default=None, help="End date YYYY-MM-DD (default: today).")
+    parser.add_argument(
+        "--resume",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Resume from the last successful watermark within N days.",
+    )
+    parser.add_argument(
+        "--activity-depth",
+        action="store_true",
+        help="Also download per-activity laps/splits/zones.",
+    )
+    parser.add_argument("--fit", action="store_true", help="Download FIT/TCX files (implies depth).")
+    parser.add_argument(
+        "--fit-format",
+        choices=["fit", "tcx", "gpx", "original"],
+        default="fit",
+        help="Activity file format for --fit (default: fit).",
+    )
+    parser.add_argument(
+        "--datasets",
+        type=str,
+        default=None,
+        help="Comma-separated subset: activities,sleep,hrv,stress,body_battery,body_composition.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore watermarks and re-download the selected window.",
+    )
+    parser.add_argument(
+        "--no-session",
+        action="store_true",
+        help="Discard the saved Garmin session before logging in (force new MFA).",
+    )
+    parser.add_argument("--no-progress", action="store_true", help="Disable the progress bar.")
     return parser
 
 
@@ -40,88 +84,103 @@ def _resolve_env_path() -> Path:
     return project_root / ".env"
 
 
-def _skip_ids(client, storage, data_dir: Path, activity_ids: list[str]) -> set[str]:
-    """Return the set of activity ids that already have depth data (laps/splits)."""
-    activity_laps = storage.base_dir / "activity_laps" / "activity_laps.csv"
-    activity_splits = storage.base_dir / "activity_splits" / "activity_splits.csv"
+def _skip_ids(storage, activity_ids: list[str]) -> set[str]:
+    """Return the set of activity ids that already have depth data."""
     already: set[str] = set()
-    for path in (activity_laps, activity_splits):
-        try:
-            df = _read_id_csv(path)
-        except Exception as error:
-            print(f"  warn: cannot read depth file {path}: {error}")
+    for table in ("activity_laps", "activity_splits"):
+        folder = storage.base_dir / table
+        files = sorted(folder.glob("*.csv"))
+        if not files:
             continue
-        for value in df["activityId"].tolist():
-            already.add(str(value))
+        try:
+            frames = [pd.read_csv(path, usecols=["activityId"]) for path in files]
+        except Exception as error:
+            print(f"  warn: cannot read depth table {table}: {error}")
+            continue
+        for frame in frames:
+            already.update(frame["activityId"].astype(str).tolist())
     return {aid for aid in activity_ids if aid not in already}
 
 
-def _read_id_csv(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame()
-    frames = []
-    parent = path.parent
-    for existing in glob.glob(str(parent / "*.csv")):
-        try:
-            frames.append(pd.read_csv(existing))
-        except Exception:
-            continue
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
-
-
-def _run_activity_depth(client, storage, data_dir: Path, activity_ids: list[str], force: bool = False) -> None:
-    """Download FIT files + laps/splits/HR/power zones per activity id."""
+def _run_activity_depth(
+    client,
+    storage,
+    data_dir: Path,
+    activity_ids: list[str],
+    force: bool = False,
+    download_fit: bool = False,
+    fit_format: str = "fit",
+) -> None:
     from gar.extraction.activities_deep import extract_activity_depth
 
-    if force:
-        keep = list(activity_ids)
-    else:
-        keep = sorted(_skip_ids(client, storage, data_dir, activity_ids))
-        print(f"Depth update: {len(keep)} of {len(activity_ids)} activities need detail data.")
-
+    keep = list(activity_ids) if force else sorted(_skip_ids(storage, activity_ids))
+    print(f"Depth update: {len(keep)} of {len(activity_ids)} activities need detail data.")
     if not keep:
-        print("All activities in window already have fit detail. Skipping.")
+        print("All activities in window already have detail. Skipping.")
         return
 
     for activity_id in keep:
         try:
             activity = client.get_activity(activity_id)
         except Exception:
-            print(f"  {activity_id}: failed to load ({sys.exc_info()[1]})")
-            continue
-        extract_activity_depth(client, storage, data_dir, activity)
-    print(f"Completed FIT/lap/session work for {len(keep)} activities.")
+            activity = {"activityId": activity_id}
+        extract_activity_depth(
+            client,
+            storage,
+            data_dir,
+            activity,
+            download_fit=download_fit,
+            fit_format=fit_format,
+        )
+    print(f"Completed detail work for {len(keep)} activities.")
 
 
 def _window_ids(client, start_date: datetime, end_date: datetime) -> list[str]:
     """Return all activity ids within the extraction window (for depth pulls)."""
-    from gar.extraction.activities import extract_activities
     try:
         acts = client.get_activities_by_date(
             start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
         )
-        if not acts:
-            return []
-        return [str(a.get("activityId")) for a in acts if a.get("activityId")]
+        return [str(a.get("activityId")) for a in (acts or []) if a.get("activityId")]
     except Exception as error:
         print(f"  error enumerating window activities: {error}")
         return []
 
 
+def _resolve_window(args, state) -> tuple[datetime, datetime]:
+    end_date = _parse_date(args.until) or datetime.now(timezone.utc)
+    start_date = _parse_date(args.since) or (end_date - timedelta(days=args.days))
+
+    if args.since is None and args.resume is not None and not args.force:
+        watermark = state.watermark("activities")
+        if watermark is not None and watermark >= end_date - timedelta(days=args.resume):
+            start_date = watermark - timedelta(days=1)
+            print(f"Resuming from watermark {start_date.date()} (activities).")
+        else:
+            start_date = end_date - timedelta(days=args.resume)
+            print(f"Starting from {start_date.date()} (resume window too old).")
+
+    if args.force:
+        print(f"Force mode: {start_date.date()} -> {end_date.date()} (ignoring watermarks).")
+    return start_date, end_date
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
-    from gar.utils.config import load_from_env, as_optional
+    from gar.utils.config import load_from_env
     from gar.utils.logging_util import setup_logging
     from gar.utils.storage import CsvStorage
+    from gar.utils.state import SyncState
     from gar.context.llm_context import generate_context, render_markdown
     from gar.extraction.login import connect, verify_login
     from gar.extraction.activities import extract_activities
     from gar.extraction.sleep import extract_sleep
     from gar.extraction.physiology import (
-        extract_hrv, extract_stress, extract_body_battery, extract_body_composition,
+        extract_hrv,
+        extract_stress,
+        extract_body_battery,
+        extract_body_composition,
     )
 
     if args.mode == "test":
@@ -138,45 +197,135 @@ def main(argv: list[str] | None = None) -> int:
 
     data_dir = Path(config.get("GARMIN_DATA_DIR") or Path("garmin_data"))
     data_dir.mkdir(parents=True, exist_ok=True)
-    storage = CsvStorage(data_dir)
+    timezone_name = config.get("GARMIN_TIMEZONE") or "UTC"
+    storage = CsvStorage(data_dir, timezone_name=timezone_name)
+    state = SyncState(data_dir / "state" / "sync_state.json")
 
-    end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=args.days)
+    start_date, end_date = _resolve_window(args, state)
+    selected = None
+    if args.datasets:
+        selected = {name.strip() for name in args.datasets.split(",") if name.strip()}
 
-    if args.resume is not None:
-        last = storage.last_period("activities")
-        if last is not None and last[1] >= end_date - timedelta(days=args.resume):
-            start_date = last[1]
-            print(f"Resuming from {start_date.strftime('%Y-%m-%d')} (activities).")
-        else:
-            print(f"Starting from {start_date.strftime('%Y-%m-%d')} (resume window too wide; full extraction).")
+    stages: list[str] = []
+    if selected is None or "activities" in selected:
+        stages.append("activities")
+    for name in ("sleep", "hrv", "stress", "body_battery", "body_composition"):
+        if selected is None or name in selected:
+            stages.append(name)
+    if args.activity_depth or args.fit:
+        stages.append("activity_depth")
+    stages.extend(["full_context", "context"])
 
-    activity_ids = extract_activities(client, storage, start_date, end_date)
-    if activity_ids:
-        print(f"Loaded {len(activity_ids)} activities.")
-    else:
-        print("No new activities to load.")
+    bar = ProgressBar(
+        total=len(stages),
+        label="sync",
+        enabled=not args.no_progress,
+    )
+    bar.start()
 
-    extract_sleep(client, storage, start_date, end_date)
-    extract_hrv(client, storage, start_date, end_date)
-    extract_stress(client, storage, start_date, end_date)
-    extract_body_battery(client, storage, start_date, end_date)
+    def mark(dataset: str, status: str = "ok", rows: int = 0, error: str | None = None) -> None:
+        state.update(
+            dataset,
+            watermark=end_date if status == "ok" else None,
+            status=status,
+            rows=rows,
+            error=error,
+        )
 
-    body_comp_dataset = as_optional(config, "GARMIN_BODY_COMP_DATASET")
-    extract_body_composition(client, storage, start_date, end_date)
+    if "activities" in stages:
+        try:
+            activity_ids = extract_activities(client, storage, start_date, end_date)
+            print(f"Loaded {len(activity_ids)} activities." if activity_ids else "No new activities.")
+            mark("activities", rows=len(activity_ids))
+        except Exception as error:
+            print(f"  activities error: {error}")
+            mark("activities", status="error", error=str(error))
+        bar.advance("activities")
 
-    if args.activity_depth:
-        window_ids = _window_ids(client, start_date, end_date)
-        _run_activity_depth(client, storage, data_dir, sorted(window_ids))
+    if "sleep" in stages:
+        try:
+            extract_sleep(client, storage, start_date, end_date)
+            mark("sleep")
+        except Exception as error:
+            print(f"  sleep error: {error}")
+            mark("sleep", status="error", error=str(error))
+        bar.advance("sleep")
 
-    _build_full_context(data_dir)
+    if "hrv" in stages:
+        try:
+            extract_hrv(client, storage, start_date, end_date)
+            mark("hrv")
+        except Exception as error:
+            print(f"  hrv error: {error}")
+            mark("hrv", status="error", error=str(error))
+        bar.advance("hrv")
 
-    context = generate_context(data_dir)
-    mark = render_markdown(data_dir, context)
-    context_dir = Path(config.get("GARMIN_CONTEXT_DIR") or data_dir / "context")
-    context_dir.mkdir(parents=True, exist_ok=True)
-    (context_dir / "summary.md").write_text(mark, encoding="utf-8")
+    if "stress" in stages:
+        try:
+            extract_stress(client, storage, start_date, end_date)
+            mark("stress")
+        except Exception as error:
+            print(f"  stress error: {error}")
+            mark("stress", status="error", error=str(error))
+        bar.advance("stress")
 
+    if "body_battery" in stages:
+        try:
+            extract_body_battery(client, storage, start_date, end_date)
+            mark("body_battery")
+        except Exception as error:
+            print(f"  body_battery error: {error}")
+            mark("body_battery", status="error", error=str(error))
+        bar.advance("body_battery")
+
+    if "body_composition" in stages:
+        try:
+            extract_body_composition(client, storage, start_date, end_date)
+            mark("body_composition")
+        except Exception as error:
+            print(f"  body_composition error: {error}")
+            mark("body_composition", status="error", error=str(error))
+        bar.advance("body_composition")
+
+    if "activity_depth" in stages:
+        try:
+            window_ids = _window_ids(client, start_date, end_date)
+            _run_activity_depth(
+                client,
+                storage,
+                data_dir,
+                sorted(window_ids),
+                force=args.force,
+                download_fit=args.fit,
+                fit_format=args.fit_format,
+            )
+            mark("activity_depth")
+        except Exception as error:
+            print(f"  activity_depth error: {error}")
+            mark("activity_depth", status="error", error=str(error))
+        bar.advance("activity_depth")
+
+    try:
+        _build_full_context(data_dir)
+        mark("full_context")
+    except Exception as error:
+        print(f"  full_context error: {error}")
+        mark("full_context", status="error", error=str(error))
+    bar.advance("full_context")
+
+    try:
+        context = generate_context(data_dir)
+        markdown = render_markdown(data_dir, context)
+        context_dir = Path(config.get("GARMIN_CONTEXT_DIR") or data_dir / "context")
+        context_dir.mkdir(parents=True, exist_ok=True)
+        (context_dir / "summary.md").write_text(markdown, encoding="utf-8")
+        mark("context")
+    except Exception as error:
+        print(f"  context error: {error}")
+        mark("context", status="error", error=str(error))
+    bar.advance("context")
+
+    bar.finish()
     print("Done.")
     return 0
 

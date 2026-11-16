@@ -151,7 +151,7 @@ class CsvStorage:
         periods = frame["_date_utc"].dt.tz_localize(None).dt.to_period("M")
         for period, group in frame.groupby(periods):
             file_path = self._file_path(data_type, period.to_timestamp())
-            target = group.drop(columns=[c for c in ("_date_utc", "_date_local") if c in group])
+            target = group.drop(columns=[c for c in ("_date_utc",) if c in group])
             self._merge_write(file_path, target, data_type)
             written += len(target)
         return written
@@ -166,9 +166,7 @@ class CsvStorage:
         folder = self.base_dir / data_type
         folder.mkdir(parents=True, exist_ok=True)
         file_path = folder / f"{data_type}.csv"
-        target = frame.drop(
-            columns=[c for c in ("_date_utc", "_date_local") if c in frame]
-        )
+        target = frame.drop(columns=[c for c in ("_date_utc",) if c in frame])
         return self._merge_write(file_path, target, data_type)
 
     def has_activity(self, data_type: str, activity_id: str) -> bool:
@@ -276,7 +274,7 @@ class CsvStorage:
             if frame.empty:
                 return frame
             frame["_date_utc"] = dates_utc
-            frame["_date_local"] = dates_utc.dt.tz_convert(self.tz).dt.date
+            frame["date_local"] = dates_utc.dt.tz_convert(self.tz).dt.date.astype(str)
 
         if keys is not None:
             missing = [key for key in keys if key not in frame.columns]

@@ -34,6 +34,7 @@ def parse_env_file(env_path: Path) -> dict[str, str]:
         "GARMIN_LOG_DIR",
         "GARMIN_MFA_PROMPT",
         "GARMIN_BODY_COMP_DATASET",
+        "GARMIN_TIMEZONE",
     }
     values: dict[str, str] = {}
     if not env_path.exists():
@@ -82,6 +83,7 @@ def load_from_env(env_path: Path, strict: bool = False) -> dict[str, str]:
         "GARMIN_LOG_DIR",
         "GARMIN_MFA_PROMPT",
         "GARMIN_BODY_COMP_DATASET",
+        "GARMIN_TIMEZONE",
     ):
         value = os.environ.get(key) or loaded.get(key)
         if value:

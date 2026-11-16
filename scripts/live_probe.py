@@ -14,7 +14,7 @@ from pathlib import Path as _P  # noqa: E402
 
 
 def _resolve_env_path() -> _P:
-    return _P(__file__).resolve().parents[2] / ".env"
+    return _P(__file__).resolve().parents[1] / ".env"
 
 
 def main() -> None:

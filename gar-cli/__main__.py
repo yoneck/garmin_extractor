@@ -5,11 +5,11 @@ Thin launcher so both ``python -m gar`` and ``python gar-cli`` work.
 
 import sys
 
-import gar.main as m
+from gar.cli.main import main as _main
 
 
 def main() -> int:
-    return m.main(sys.argv[1:])
+    return _main(sys.argv[1:])
 
 
 if __name__ == "__main__":
