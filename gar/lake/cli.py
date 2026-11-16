@@ -10,10 +10,11 @@ from gar.lake.db import (
     connect,
     lake_path,
     row_count,
+    schema_version,
     table_exists,
 )
 from gar.lake.derive import derive_all
-from gar.lake.export import export_parquet
+from gar.lake.export import export_csv, export_parquet
 from gar.lake.ingest import dataset_status, discover_datasets, ingest_all
 from gar.lake.state import get_sync_state
 from gar.lake.validate import quarantine_count, validate_all
@@ -44,8 +45,9 @@ def _build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate", help="Run data-quality rules.")
     validate.add_argument("--json", dest="as_json", action="store_true")
 
-    export = sub.add_parser("export", help="Write Parquet snapshots.")
-    export.add_argument("--out", help="Output directory (default: <data>/parquet).")
+    export = sub.add_parser("export", help="Write Parquet or CSV snapshots.")
+    export.add_argument("--out", help="Output directory (default: <data>/parquet or <data>/csv).")
+    export.add_argument("--format", choices=["parquet", "csv"], default="parquet")
     export.add_argument("--include-raw", action="store_true")
 
     status = sub.add_parser("status", help="Show lake and dataset status.")
@@ -107,7 +109,7 @@ def _status(con, data_dir: Path) -> dict:
         sync_rows.append(row)
     return {
         "database": str(lake_path(data_dir)),
-        "schema_version": "3.0.0",
+        "schema_version": schema_version(con) or "unknown",
         "raw": sync_rows,
         "curated": curated,
         "quarantine_rows": quarantine_count(con),
@@ -174,8 +176,12 @@ def main(argv: list[str] | None = None, data_dir: Path | None = None) -> int:
 
         if args.command == "export":
             out = Path(args.out) if args.out else None
-            manifest = export_parquet(con, data_dir, out, include_raw=args.include_raw)
-            print(json.dumps(manifest, indent=2, default=str))
+            if args.format == "csv":
+                result = export_csv(con, data_dir, out, include_raw=args.include_raw)
+            else:
+                manifest = export_parquet(con, data_dir, out, include_raw=args.include_raw)
+                result = manifest
+            print(json.dumps(result, indent=2, default=str))
             return 0
 
         if args.command == "status":
@@ -184,6 +190,7 @@ def main(argv: list[str] | None = None, data_dir: Path | None = None) -> int:
                 print(json.dumps(status, indent=2, default=str))
             else:
                 print(f"database: {status['database']}")
+                print(f"schema version: {status['schema_version']}")
                 print(f"quarantine rows: {status['quarantine_rows']}")
                 print("\nRaw datasets:")
                 for row in status["raw"]:

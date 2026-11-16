@@ -452,6 +452,27 @@ def test_lake_path_is_deterministic(tmp_path: Path):
     assert lake_db.safe_name("activity-laps!!") == "activity_laps"
 
 
+def test_schema_init_is_idempotent(tmp_path: Path):
+    con = _connect(tmp_path)
+    try:
+        assert lake_db.table_exists(con, "meta")
+        assert lake_db.table_exists(con, "sync_state")
+        assert lake_db.table_exists(con, "quarantine_record")
+        assert lake_db.get_meta(con, "schema_version") == lake_db.SCHEMA_VERSION
+        rows = con.execute("SELECT count(*) FROM schema_migration").fetchall()[0][0]
+        assert rows == 1
+    finally:
+        con.close()
+
+    con = _connect(tmp_path)
+    try:
+        rows = con.execute("SELECT count(*) FROM schema_migration").fetchall()[0][0]
+        assert rows == 1
+        assert lake_db.get_meta(con, "schema_version") == lake_db.SCHEMA_VERSION
+    finally:
+        con.close()
+
+
 def test_ingest_is_incremental_and_tracks_watermark(tmp_path: Path):
     _seed(tmp_path)
     con = _connect(tmp_path)

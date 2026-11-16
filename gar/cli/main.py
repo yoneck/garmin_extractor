@@ -235,6 +235,18 @@ def main(argv: list[str] | None = None) -> int:
         from gar.lake.cli import main as lake_main
 
         return lake_main(argv[1:], data_dir=_default_data_dir())
+    if argv and argv[0] == "context":
+        from gar.context.cli import main as context_main
+
+        return context_main(argv[1:], data_dir=_default_data_dir())
+    if argv and argv[0] in ("rec", "recommend"):
+        from gar.recommendations.ledger import main as rec_main
+
+        return rec_main(argv[1:], data_dir=_default_data_dir())
+    if argv and argv[0] == "sync":
+        return main(argv[1:])
+    if argv and argv[0] == "report" and len(argv) > 1 and argv[1] == "coverage":
+        return main(["coverage", *argv[2:]])
 
     args = _build_parser().parse_args(argv)
 

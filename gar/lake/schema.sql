@@ -43,13 +43,14 @@ CREATE TABLE IF NOT EXISTS sync_state (
     fingerprint     VARCHAR
 );
 
-CREATE TABLE IF NOT EXISTS fact_flag (
-    flag_id         VARCHAR PRIMARY KEY,
-    date_local      DATE NOT NULL,
-    severity        VARCHAR NOT NULL,
-    code            VARCHAR NOT NULL,
-    value           DOUBLE,
-    threshold       DOUBLE,
-    reason          VARCHAR,
-    source          VARCHAR
+CREATE TABLE IF NOT EXISTS fact_recommendation (
+    rec_id          VARCHAR PRIMARY KEY,
+    created_utc     TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    horizon_days    INTEGER,
+    recommendation  VARCHAR NOT NULL,
+    evidence_json   VARCHAR,
+    status          VARCHAR,
+    outcome         VARCHAR,
+    adhered         BOOLEAN,
+    reviewed_utc    TIMESTAMP
 );

@@ -29,6 +29,40 @@ def _tables(con: duckdb.DuckDBPyConnection, prefix: str | None = None) -> list[s
     return names
 
 
+def export_csv(
+    con: duckdb.DuckDBPyConnection,
+    data_dir: Path,
+    out_dir: Path | None = None,
+    include_raw: bool = False,
+    verbose: bool = True,
+) -> dict:
+    data_dir = Path(data_dir)
+    out_dir = Path(out_dir) if out_dir else data_dir / "csv"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tables = [
+        name
+        for name in _tables(con)
+        if include_raw or not name.startswith("raw_")
+    ]
+    exported = []
+    for table in tables:
+        target = out_dir / f"{table}.csv"
+        con.execute(
+            f"COPY (SELECT * FROM {quote_identifier(table)}) TO '{str(target).replace(chr(39), chr(39)*2)}' (FORMAT CSV, HEADER)",
+        )
+        exported.append({"table": table, "path": str(target), "bytes": target.stat().st_size})
+    manifest = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "output_dir": str(out_dir),
+        "format": "csv",
+        "tables": exported,
+    }
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
+    if verbose:
+        print(f"  exported {len(exported)} table(s) to {out_dir}")
+    return manifest
+
+
 def export_parquet(
     con: duckdb.DuckDBPyConnection,
     data_dir: Path,

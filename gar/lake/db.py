@@ -45,6 +45,20 @@ def init_schema(con: duckdb.DuckDBPyConnection) -> None:
         "INSERT OR IGNORE INTO schema_migration (version, description) VALUES (?, ?)",
         [SCHEMA_VERSION, "core lake schema"],
     )
+    con.execute(
+        """
+        INSERT INTO meta (key, value, updated_at_utc)
+        VALUES ('schema_version', ?, current_timestamp)
+        ON CONFLICT (key) DO UPDATE SET
+            value = excluded.value,
+            updated_at_utc = now()
+        """,
+        [SCHEMA_VERSION],
+    )
+
+
+def schema_version(con: duckdb.DuckDBPyConnection) -> str | None:
+    return get_meta(con, "schema_version")
 
 
 def safe_name(value: str) -> str:
