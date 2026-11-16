@@ -173,7 +173,10 @@ def _date_series(frame: pd.DataFrame | None) -> pd.Series:
 def _timestamps(frame: pd.DataFrame | None, name: str) -> pd.Series:
     if frame is None or name not in frame.columns:
         return pd.Series(dtype="datetime64[ns]")
-    values = pd.to_numeric(frame[name], errors="coerce")
+    series = frame[name]
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    values = pd.to_numeric(series, errors="coerce")
     if values.dropna().empty:
         return pd.Series(dtype="datetime64[ns]")
     unit = "ms" if values.max() > 1e11 else "s"
@@ -257,11 +260,28 @@ def derive_activities(con: duckdb.DuckDBPyConnection) -> int:
             "SELECT max(value) FROM fact_threshold WHERE kind = 'ftp'"
         ).fetchall()[0][0]
         if ftp:
-            np_power = pd.to_numeric(fact.get("np_w"), errors="coerce")
-            duration = pd.to_numeric(fact.get("moving_duration_s"), errors="coerce")
+            np_power = _numeric(fact, "np_w")
+            duration = _numeric(fact, "moving_duration_s", "duration_s")
             intensity = np_power / float(ftp)
             fact["if_"] = intensity
             fact["tss"] = (duration * np_power * intensity) / (float(ftp) * 3600) * 100
+
+    # Efficiency factor: power per heartbeat (higher is fitter for the same pace).
+    np_power = _numeric(fact, "np_w", "avg_power_w")
+    avg_hr = _numeric(fact, "avg_hr_bpm")
+    fact["efficiency_factor"] = np.where(avg_hr > 0, np_power / avg_hr, np.nan)
+
+    # Banister TRIMP from heart-rate reserve. Resting HR is unknown here, so a
+    # population default is used; a proper RHR-based variant belongs in M3.
+    duration_min = _numeric(fact, "moving_duration_s", "duration_s") / 60.0
+    max_hr = _numeric(fact, "max_hr_bpm")
+    resting = 60.0
+    reserve = ((avg_hr - resting) / (max_hr - resting)).clip(lower=0, upper=1)
+    fact["trimp"] = np.where(
+        duration_min.notna() & reserve.notna(),
+        duration_min * reserve * 0.64 * np.exp(1.92 * reserve),
+        np.nan,
+    )
     return _write(con, "fact_activity", fact.reset_index(drop=True))
 
 
@@ -302,7 +322,56 @@ def derive_zones(con: duckdb.DuckDBPyConnection) -> int:
         return 0
     fact = pd.concat(frames, ignore_index=True).dropna(subset=["activity_id", "zone"])
     fact = fact.drop_duplicates(["activity_id", "zone_type", "zone"], keep="last")
-    return _write(con, "fact_zone", fact.reset_index(drop=True))
+    rows = _write(con, "fact_zone", fact.reset_index(drop=True))
+    _attach_zone_time(con)
+    return rows
+
+
+def _attach_zone_time(con: duckdb.DuckDBPyConnection) -> None:
+    """Add ``time_in_zone_1_min`` ... ``_5_min`` columns to ``fact_activity``."""
+    if not table_exists(con, "fact_activity") or not table_exists(con, "fact_zone"):
+        return
+    zones = con.execute(
+        """
+        SELECT activity_id, zone, sum(seconds) AS seconds
+        FROM fact_zone
+        WHERE zone_type = 'hr' AND zone BETWEEN 1 AND 5 AND seconds IS NOT NULL
+        GROUP BY activity_id, zone
+        """
+    ).df()
+    for zone in range(1, 6):
+        con.execute(
+            f"ALTER TABLE fact_activity "
+            f"ADD COLUMN IF NOT EXISTS time_in_zone_{zone}_min DOUBLE"
+        )
+    if zones.empty:
+        return
+    pivot = zones.pivot_table(
+        index="activity_id", columns="zone", values="seconds", aggfunc="sum"
+    ).fillna(0.0)
+    frame = pd.DataFrame({"activity_id": pivot.index.astype("int64")})
+    for zone in range(1, 6):
+        values = (
+            pivot[zone].to_numpy() / 60.0
+            if zone in pivot.columns
+            else np.zeros(len(pivot))
+        )
+        frame[f"time_in_zone_{zone}_min"] = values
+    con.register("_zone_time", frame.reset_index(drop=True))
+    try:
+        assignments = ", ".join(
+            f"time_in_zone_{zone}_min = _zone_time.time_in_zone_{zone}_min"
+            for zone in range(1, 6)
+        )
+        con.execute(
+            f"""
+            UPDATE fact_activity SET {assignments}
+            FROM _zone_time
+            WHERE fact_activity.activity_id = _zone_time.activity_id
+            """
+        )
+    finally:
+        con.unregister("_zone_time")
 
 
 # ---------------------------------------------------------------------------
@@ -316,12 +385,12 @@ def derive_sleep(con: duckdb.DuckDBPyConnection) -> int:
     fact = _rename(raw, SLEEP_MAP)
     fact["date_local"] = pd.to_datetime(fact["date_local"], errors="coerce").dt.date
     fact = fact.dropna(subset=["date_local"]).drop_duplicates("date_local", keep="last")
-    for source, target in (
-        ("start_utc", "start_utc"),
-        ("end_utc", "end_utc"),
+    for raw_name, target in (
+        ("sleepStartTimestampGMT", "start_utc"),
+        ("sleepEndTimestampGMT", "end_utc"),
     ):
-        if source in fact.columns:
-            fact[target] = _timestamps(raw.loc[fact.index], source)
+        if raw_name in raw.columns:
+            fact[target] = _timestamps(raw.loc[fact.index], raw_name)
     for source in ("sleep_total_s", "nap_s", "deep_s", "rem_s", "light_s", "awake_s"):
         if source in fact.columns:
             fact[source.replace("_s", "_min")] = pd.to_numeric(
@@ -715,6 +784,42 @@ def derive_plan(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
 # Daily warehouse
 # ---------------------------------------------------------------------------
 
+def _intensity_frame(con: duckdb.DuckDBPyConnection) -> pd.DataFrame | None:
+    """Per-day low/high HR-zone minutes from ``fact_zone``."""
+    if not (
+        table_exists(con, "fact_activity")
+        and table_exists(con, "fact_zone")
+    ):
+        return None
+    frame = con.execute(
+        """
+        SELECT
+            CAST(a.start_utc AS DATE) AS date_local,
+            sum(
+                CASE WHEN z.zone <= 2 THEN z.seconds ELSE 0 END
+            ) / 60.0 AS intensity_low_min,
+            sum(
+                CASE WHEN z.zone >= 4 THEN z.seconds ELSE 0 END
+            ) / 60.0 AS intensity_high_min
+        FROM fact_activity AS a
+        JOIN fact_zone AS z ON a.activity_id = z.activity_id
+        WHERE z.zone_type = 'hr' AND z.seconds IS NOT NULL
+        GROUP BY 1
+        """
+    ).df()
+    if frame.empty:
+        return None
+    frame["date_local"] = pd.to_datetime(frame["date_local"], errors="coerce").dt.date
+    total = frame["intensity_low_min"] + frame["intensity_high_min"]
+    frame["intensity_low_pct"] = np.where(
+        total > 0, 100 * frame["intensity_low_min"] / total, np.nan
+    )
+    frame["intensity_high_pct"] = np.where(
+        total > 0, 100 * frame["intensity_high_min"] / total, np.nan
+    )
+    return frame.dropna(subset=["date_local"])
+
+
 def derive_daily(con: duckdb.DuckDBPyConnection) -> int:
     parts: list[pd.DataFrame] = []
 
@@ -767,6 +872,8 @@ def derive_daily(con: duckdb.DuckDBPyConnection) -> int:
                     "sleep_score": _numeric(sleep, "sleep_score"),
                     "sleep_need_min": _numeric(sleep, "sleep_need_min"),
                     "sleep_quality": _series(sleep, "sleep_quality"),
+                    "sleep_start_utc": _timestamps(sleep, "start_utc"),
+                    "sleep_end_utc": _timestamps(sleep, "end_utc"),
                 }
             )
         )
@@ -929,10 +1036,29 @@ def derive_daily(con: duckdb.DuckDBPyConnection) -> int:
     daily["rhr_baseline_28d_bpm"] = rhr.rolling(28, min_periods=7).mean()
     daily["rhr_delta_bpm"] = rhr - daily["rhr_baseline_28d_bpm"]
 
+    readiness = _numeric(daily, "readiness_score")
+    daily["readiness_delta"] = readiness.diff()
+    daily["readiness_baseline_7d"] = readiness.rolling(7, min_periods=3).mean()
+
+    battery_wake = _numeric(daily, "body_battery_wake")
+    daily["body_battery_wake_delta"] = battery_wake - battery_wake.rolling(
+        7, min_periods=3
+    ).mean()
+
     need = _numeric(daily, "sleep_need_min")
     total = _numeric(daily, "sleep_total_min")
     deficit = (need - total).clip(lower=0)
     daily["sleep_debt_7d_min"] = deficit.rolling(7, min_periods=1).sum()
+
+    # Sleep regularity: standard deviation of the sleep midpoint. Times before
+    # noon are shifted by 24h so a 23:30 and 00:30 bedtime compare correctly.
+    start = _timestamps(daily, "sleep_start_utc")
+    end = _timestamps(daily, "sleep_end_utc")
+    midpoint = start + (end - start) / 2
+    midpoint_min = midpoint.dt.hour * 60 + midpoint.dt.minute
+    midpoint_min = midpoint_min.where(midpoint_min >= 12 * 60, midpoint_min + 24 * 60)
+    daily["sleep_midpoint_min"] = midpoint_min
+    daily["sleep_regularity_sd_min"] = midpoint_min.rolling(7, min_periods=3).std()
 
     # Training load from activities, then acute/chronic/monotony/strain.
     activities = _read(con, "fact_activity")
@@ -955,8 +1081,24 @@ def derive_daily(con: duckdb.DuckDBPyConnection) -> int:
         std7 = daily["training_load_day"].rolling(7, min_periods=3).std()
         daily["monotony"] = mean7 / std7.replace(0, np.nan)
         daily["strain"] = daily["training_load_day"].rolling(7, min_periods=1).sum() * daily["monotony"]
+        load_7d = daily["training_load_day"].rolling(7, min_periods=1).sum()
+        load_28d_daily = daily["training_load_day"].rolling(28, min_periods=7).mean()
+        daily["load_7d_sum"] = load_7d
+        daily["load_28d_daily_avg"] = load_28d_daily
+        daily["load_ratio_7d_28d"] = load_7d / (load_28d_daily * 7).replace(0, np.nan)
     else:
         daily["training_load_day"] = 0.0
+
+    intensity = _intensity_frame(con)
+    if intensity is not None and not intensity.empty:
+        daily = daily.merge(intensity, on="date_local", how="left")
+        for column in (
+            "intensity_low_min",
+            "intensity_high_min",
+            "intensity_low_pct",
+            "intensity_high_pct",
+        ):
+            daily[column] = pd.to_numeric(daily[column], errors="coerce").fillna(0.0)
 
     daily["schema_version"] = "3.0.0"
     daily["source"] = "garmin"
@@ -988,6 +1130,8 @@ def derive_flags(con: duckdb.DuckDBPyConnection) -> int:
         )
 
     if daily is not None and not daily.empty:
+        rhr_streak = 0
+        short_sleep_streak = 0
         for row in daily.itertuples(index=False):
             day = getattr(row, "date_local")
             acwr = getattr(row, "acwr", None)
@@ -999,12 +1143,39 @@ def derive_flags(con: duckdb.DuckDBPyConnection) -> int:
             status = getattr(row, "hrv_status", None)
             if isinstance(status, str) and status.upper() == "LOW":
                 add(day, "warn", "HRV_LOW", None, None, "Nightly HRV status is LOW")
+            hrv_z = getattr(row, "hrv_zscore", None)
+            if hrv_z is not None and not pd.isna(hrv_z) and hrv_z < -1:
+                add(day, "warn", "HRV_ZSCORE_LOW", hrv_z, -1, "HRV z-score below -1")
             debt = getattr(row, "sleep_debt_7d_min", None)
             if debt is not None and not pd.isna(debt) and debt > 120:
                 add(day, "warn", "SLEEP_DEBT", debt, 120, "7-day sleep debt above 2h")
+            if debt is not None and not pd.isna(debt) and debt > 300:
+                add(day, "warn", "SLEEP_DEBT_HIGH", debt, 300, "7-day sleep debt above 5h")
             delta = getattr(row, "rhr_delta_bpm", None)
             if delta is not None and not pd.isna(delta) and delta > 5:
                 add(day, "warn", "RHR_ELEVATED", delta, 5, "Resting HR more than 5 bpm above baseline")
+                rhr_streak += 1
+            else:
+                rhr_streak = 0
+            if rhr_streak == 3:
+                add(day, "warn", "RHR_ELEVATED_3D", delta, 5, "Resting HR elevated for 3 days")
+            sleep_total = getattr(row, "sleep_total_min", None)
+            if (
+                sleep_total is not None
+                and not pd.isna(sleep_total)
+                and sleep_total < 360
+            ):
+                short_sleep_streak += 1
+            else:
+                short_sleep_streak = 0
+            if short_sleep_streak == 3:
+                add(day, "warn", "SLEEP_SHORT_3D", sleep_total, 360, "Under 6h sleep for 3 nights")
+            stress_avg = getattr(row, "stress_avg", None)
+            if stress_avg is not None and not pd.isna(stress_avg) and stress_avg > 60:
+                add(day, "warn", "STRESS_HIGH", stress_avg, 60, "Daily average stress above 60")
+            ratio = getattr(row, "load_ratio_7d_28d", None)
+            if ratio is not None and not pd.isna(ratio) and ratio > 1.3:
+                add(day, "warn", "LOAD_RAMP_HIGH", ratio, 1.3, "7d load above 1.3x the 28d average")
             score = getattr(row, "readiness_score", None)
             if score is not None and not pd.isna(score) and score < 40:
                 add(day, "warn", "READINESS_LOW", score, 40, "Training readiness below 40")

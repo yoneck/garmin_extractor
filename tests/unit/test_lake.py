@@ -63,6 +63,14 @@ def _seed(tmp_path: Path) -> None:
             {
                 "timestamp": T0,
                 "calendarDate": "2026-11-15",
+                "sleepStartTimestampGMT": int(
+                    datetime(2026, 11, 14, 22, 30, tzinfo=timezone.utc).timestamp()
+                    * 1000
+                ),
+                "sleepEndTimestampGMT": int(
+                    datetime(2026, 11, 15, 6, 30, tzinfo=timezone.utc).timestamp()
+                    * 1000
+                ),
                 "sleepTimeSeconds": 25200,
                 "deepSleepSeconds": 3600,
                 "lightSleepSeconds": 15000,
@@ -285,6 +293,20 @@ def test_derive_builds_facts_and_daily(tmp_path: Path):
         assert daily["acwr"] == pytest.approx(0.29)
         assert daily["sleep_debt_7d_min"] == 60
         assert daily["sleep_feel"] == 3
+        assert daily["sleep_midpoint_min"] == 2 * 60 + 30 + 24 * 60
+        assert daily["intensity_low_min"] == 10
+        assert daily["intensity_high_min"] == 0
+        assert daily["intensity_low_pct"] == 100
+
+        activity = con.execute("SELECT * FROM fact_activity").df().iloc[0]
+        assert activity["efficiency_factor"] == pytest.approx(230 / 140)
+        reserve = (140 - 60) / (175 - 60)
+        expected_trimp = (5200 / 60) * reserve * 0.64 * 2.718281828459045 ** (
+            1.92 * reserve
+        )
+        assert activity["trimp"] == pytest.approx(expected_trimp)
+        assert activity["time_in_zone_1_min"] == 10
+        assert activity["time_in_zone_2_min"] == 0
 
         flags = con.execute("SELECT code FROM fact_flag").df()
         assert "HRV_LOW" in set(flags["code"])
