@@ -63,7 +63,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--datasets",
         type=str,
         default=None,
-        help="Comma-separated subset: activities,sleep,hrv,stress,body_battery,body_composition.",
+        help=(
+            "Comma-separated subset: activities,daily,steps,sleep,hrv,stress,"
+            "body_battery,body_composition,performance,plan."
+        ),
+    )
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="Also fetch workouts, adherence, gear, weather and strength sets.",
+    )
+    parser.add_argument(
+        "--no-daily",
+        action="store_true",
+        help="Skip daily wellness/readiness/training status.",
+    )
+    parser.add_argument(
+        "--no-performance",
+        action="store_true",
+        help="Skip thresholds, zones, records, race predictions and scores.",
+    )
+    parser.add_argument(
+        "--hrv-readings",
+        action="store_true",
+        help="Also fetch per-night HRV readings (slow; short windows only).",
     )
     parser.add_argument(
         "--force",
@@ -90,6 +113,33 @@ def _default_data_dir() -> Path:
 
     config = load_from_env(_resolve_env_path(), strict=False)
     return Path(config.get("GARMIN_DATA_DIR") or Path("garmin_data"))
+
+
+def _coverage_main(argv: list[str]) -> int:
+    import json
+
+    from gar.context.coverage import coverage_report, render_coverage
+
+    parser = argparse.ArgumentParser(
+        prog="gar coverage", description="Show local data coverage per dataset."
+    )
+    parser.add_argument("--days", type=int, default=90, help="Window size (default: 90).")
+    parser.add_argument("--data-dir", help="Override GARMIN_DATA_DIR.")
+    parser.add_argument("--json", dest="as_json", action="store_true")
+    parser.add_argument("--out", help="Write the report to this file.")
+    args = parser.parse_args(argv)
+
+    data_dir = Path(args.data_dir) if args.data_dir else _default_data_dir()
+    report = coverage_report(data_dir, days=args.days)
+    text = (
+        json.dumps(report, indent=2)
+        if args.as_json
+        else render_coverage(report)
+    )
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text + "\n", encoding="utf-8")
+    return 0
 
 
 def _skip_ids(storage, activity_ids: list[str]) -> set[str]:
@@ -179,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
         from gar.input.subjective import main as log_main
 
         return log_main(argv[1:], data_dir=_default_data_dir())
+    if argv and argv[0] == "coverage":
+        return _coverage_main(argv[1:])
 
     args = _build_parser().parse_args(argv)
 
@@ -190,6 +242,9 @@ def main(argv: list[str] | None = None) -> int:
     from gar.extraction.login import connect, verify_login
     from gar.extraction.activities import extract_activities
     from gar.extraction.sleep import extract_sleep
+    from gar.extraction.daily import extract_daily, extract_steps
+    from gar.extraction.performance import extract_performance
+    from gar.extraction.plan import extract_plan
     from gar.extraction.physiology import (
         extract_hrv,
         extract_stress,
@@ -221,11 +276,23 @@ def main(argv: list[str] | None = None) -> int:
         selected = {name.strip() for name in args.datasets.split(",") if name.strip()}
 
     stages: list[str] = []
-    if selected is None or "activities" in selected:
+
+    def wanted(name: str) -> bool:
+        return selected is None or name in selected
+
+    if wanted("activities"):
         stages.append("activities")
+    if wanted("daily") and not args.no_daily:
+        stages.append("daily")
+    if wanted("steps"):
+        stages.append("steps")
     for name in ("sleep", "hrv", "stress", "body_battery", "body_composition"):
-        if selected is None or name in selected:
+        if wanted(name):
             stages.append(name)
+    if wanted("performance") and not args.no_performance:
+        stages.append("performance")
+    if args.plan or wanted("plan"):
+        stages.append("plan")
     if args.activity_depth or args.fit:
         stages.append("activity_depth")
     stages.extend(["full_context", "context"])
@@ -246,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
             error=error,
         )
 
+    activity_ids: list[str] = []
     if "activities" in stages:
         try:
             activity_ids = extract_activities(client, storage, start_date, end_date)
@@ -255,6 +323,25 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  activities error: {error}")
             mark("activities", status="error", error=str(error))
         bar.advance("activities")
+
+    if "daily" in stages:
+        try:
+            extract_daily(client, storage, start_date, end_date)
+            mark("daily")
+        except Exception as error:
+            print(f"  daily error: {error}")
+            mark("daily", status="error", error=str(error))
+        bar.advance("daily")
+
+    if "steps" in stages:
+        try:
+            rows = extract_steps(client, storage, start_date, end_date)
+            print(f"  steps: {rows} days.")
+            mark("steps", rows=rows)
+        except Exception as error:
+            print(f"  steps error: {error}")
+            mark("steps", status="error", error=str(error))
+        bar.advance("steps")
 
     if "sleep" in stages:
         try:
@@ -267,7 +354,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if "hrv" in stages:
         try:
-            extract_hrv(client, storage, start_date, end_date)
+            extract_hrv(
+                client,
+                storage,
+                start_date,
+                end_date,
+                include_readings=args.hrv_readings,
+            )
             mark("hrv")
         except Exception as error:
             print(f"  hrv error: {error}")
@@ -300,6 +393,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  body_composition error: {error}")
             mark("body_composition", status="error", error=str(error))
         bar.advance("body_composition")
+
+    if "performance" in stages:
+        try:
+            counts = extract_performance(client, storage, start_date, end_date)
+            mark("performance", rows=sum(counts.values()))
+        except Exception as error:
+            print(f"  performance error: {error}")
+            mark("performance", status="error", error=str(error))
+        bar.advance("performance")
+
+    if "plan" in stages:
+        try:
+            window_ids = activity_ids or _window_ids(client, start_date, end_date)
+            extract_plan(
+                client,
+                storage,
+                start_date,
+                end_date,
+                activity_ids=sorted(window_ids),
+            )
+            mark("plan")
+        except Exception as error:
+            print(f"  plan error: {error}")
+            mark("plan", status="error", error=str(error))
+        bar.advance("plan")
 
     if "activity_depth" in stages:
         try:

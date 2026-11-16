@@ -1,3 +1,5 @@
 garminconnect
 pandas
 python-dotenv
+duckdb>=1.0
+filelock>=3.12

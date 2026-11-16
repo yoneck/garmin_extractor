@@ -109,6 +109,42 @@ def _max_metrics_rows(date_str: str, timestamp: int, payload) -> list[dict]:
     return rows
 
 
+def extract_steps(
+    client,
+    storage,
+    start_date: datetime,
+    end_date: datetime,
+    fetcher=None,
+) -> int:
+    """Lightweight daily step/distance backfill in one range request."""
+    start = start_date.strftime("%Y-%m-%d")
+    end = min(end_date, datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    try:
+        payload = _call(fetcher, client, "steps_daily", "get_daily_steps", start, end)
+    except Exception as error:
+        print(f"  steps error: {error}")
+        return 0
+    rows = []
+    for entry in payload or []:
+        if not isinstance(entry, dict):
+            continue
+        when = entry.get("calendarDate")
+        if not when:
+            continue
+        rows.append(
+            {
+                "timestamp": parse_ts(when),
+                "date": when,
+                "totalSteps": entry.get("totalSteps"),
+                "totalDistanceMeters": entry.get("totalDistance"),
+                "stepGoal": entry.get("stepGoal"),
+            }
+        )
+    if rows:
+        storage.sync("steps_daily", rows)
+    return len(rows)
+
+
 def extract_daily(client, storage, start_date: datetime, end_date: datetime, fetcher=None):
     days = 0
     for day in _days(start_date, end_date):

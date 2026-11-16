@@ -107,50 +107,108 @@ def _pairs(values) -> list[tuple[int, float]]:
 # HRV
 # ---------------------------------------------------------------------------
 
-def extract_hrv(client, storage, start_date: datetime, end_date: datetime):
+def _nightly_row(
+    calendar_date: str,
+    summary: dict,
+    readings: list,
+    fallback_mean=None,
+) -> dict | None:
+    values = [
+        float(reading["hrvValue"])
+        for reading in readings
+        if isinstance(reading, dict) and reading.get("hrvValue") is not None
+    ]
+    night_mean = (
+        summary.get("lastNightAvg")
+        or fallback_mean
+        or (sum(values) / len(values) if values else None)
+    )
+    status = summary.get("status")
+    if not values and night_mean is None and not status:
+        return None
+    day_ts = parse_ts(calendar_date)
+    return {
+        "timestamp": day_ts,
+        "hrvDate": day_ts,
+        "calendarDate": calendar_date,
+        "hrvNightMean": night_mean,
+        "hrvMean": night_mean,
+        "hrvStatus": status,
+        "hrvWeeklyAvg": summary.get("weeklyAvg"),
+        "hrvLastNightAvg": summary.get("lastNightAvg"),
+        "hrvLastNight5MinHigh": summary.get("lastNight5MinHigh"),
+        "hrvFeedback": summary.get("feedbackPhrase"),
+        "hrvReadingCount": len(values),
+    }
+
+
+def extract_hrv(
+    client,
+    storage,
+    start_date: datetime,
+    end_date: datetime,
+    include_readings: bool = True,
+    max_reading_days: int = 14,
+):
+    """Extract nightly HRV.
+
+    Nightly summaries use the single-call range endpoint when available, which
+    turns a 30-day sync from ~30 requests into one. Per-reading samples need
+    the daily endpoint, so they are only fetched for short windows.
+    """
+    days = list(_days(start_date, end_date))
+    if not days:
+        return
+    start_str = days[0].strftime("%Y-%m-%d")
+    end_str = days[-1].strftime("%Y-%m-%d")
+
+    summaries: dict[str, dict] = {}
+    if len(days) > 1:
+        fetch_range = getattr(client, "get_hrv_data_range", None)
+        if callable(fetch_range):
+            try:
+                payload = fetch_range(start_str, end_str) or {}
+                for summary in payload.get("hrvSummaries") or []:
+                    if isinstance(summary, dict) and summary.get("calendarDate"):
+                        summaries[summary["calendarDate"]] = summary
+            except Exception as error:
+                print(f"  HRV range error: {error}")
+
+    want_readings = include_readings and len(days) <= max_reading_days
+    daily_payloads: dict[str, dict] = {}
+    if want_readings:
+        for day in days:
+            date_str = day.strftime("%Y-%m-%d")
+            try:
+                daily_payloads[date_str] = client.get_hrv_data(date_str) or {}
+            except Exception as error:
+                print(f"  HRV readings error on {date_str}: {error}")
+
     readings_count = 0
     nights = 0
-    for day in _days(start_date, end_date):
+    for day in days:
         date_str = day.strftime("%Y-%m-%d")
-        try:
-            data = client.get_hrv_data(date_str) or {}
-        except Exception as error:
-            print(f"  HRV error on {date_str}: {error}")
+        data = daily_payloads.get(date_str)
+        if data is None and date_str not in summaries:
+            try:
+                data = client.get_hrv_data(date_str) or {}
+            except Exception as error:
+                print(f"  HRV error on {date_str}: {error}")
+                continue
+        summary = summaries.get(date_str)
+        if summary is None:
+            summary = (data or {}).get("hrvSummary") or {}
+        summary = dict(summary)
+        if not summary.get("status") and (data or {}).get("hrvStatus"):
+            summary["status"] = data["hrvStatus"]
+        readings = (data or {}).get("hrvReadings") or []
+        fallback = (data or {}).get("avgOvernightHrv")
+        calendar_date = summary.get("calendarDate") or (data or {}).get(
+            "calendarDate"
+        ) or date_str
+        nightly = _nightly_row(calendar_date, summary, readings, fallback)
+        if nightly is None:
             continue
-        summary = data.get("hrvSummary") or {}
-        readings = data.get("hrvReadings") or []
-        values = [
-            float(reading["hrvValue"])
-            for reading in readings
-            if isinstance(reading, dict) and reading.get("hrvValue") is not None
-        ]
-        night_mean = (
-            summary.get("lastNightAvg")
-            or data.get("avgOvernightHrv")
-            or (sum(values) / len(values) if values else None)
-        )
-        status = summary.get("status") or data.get("hrvStatus")
-        weekly_avg = summary.get("weeklyAvg")
-        last_night_avg = summary.get("lastNightAvg") or data.get("avgOvernightHrv")
-        day_ts = parse_ts(data.get("calendarDate") or date_str)
-        feedback = summary.get("feedbackPhrase")
-
-        if not values and night_mean is None and not status:
-            continue
-
-        nightly = {
-            "timestamp": day_ts,
-            "hrvDate": day_ts,
-            "calendarDate": data.get("calendarDate") or date_str,
-            "hrvNightMean": night_mean,
-            "hrvMean": night_mean,
-            "hrvStatus": status,
-            "hrvWeeklyAvg": weekly_avg,
-            "hrvLastNightAvg": last_night_avg,
-            "hrvLastNight5MinHigh": summary.get("lastNight5MinHigh"),
-            "hrvFeedback": feedback,
-            "hrvReadingCount": len(values),
-        }
         storage.sync("hrv_nightly", [nightly])
         nights += 1
 
@@ -165,13 +223,13 @@ def extract_hrv(client, storage, start_date: datetime, end_date: datetime):
             records.append(
                 {
                     "timestamp": ts,
-                    "hrvDate": day_ts,
-                    "calendarDate": nightly["calendarDate"],
+                    "hrvDate": nightly["hrvDate"],
+                    "calendarDate": calendar_date,
                     "hrvValue": value,
-                    "hrvMean": night_mean,
-                    "hrvStatus": status,
-                    "hrvWeeklyAvg": weekly_avg,
-                    "hrvLastNightAvg": last_night_avg,
+                    "hrvMean": nightly["hrvNightMean"],
+                    "hrvStatus": nightly["hrvStatus"],
+                    "hrvWeeklyAvg": nightly["hrvWeeklyAvg"],
+                    "hrvLastNightAvg": nightly["hrvLastNightAvg"],
                 }
             )
         if records:

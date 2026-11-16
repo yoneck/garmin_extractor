@@ -60,6 +60,80 @@ def test_hrv_nightly_mean_and_date(tmp_path: Path):
     assert readings.iloc[0]["hrvValue"] == 28
 
 
+class RangeHrvClient:
+    def __init__(self):
+        self.range_calls = 0
+        self.daily_calls = 0
+
+    def get_hrv_data_range(self, start, end):
+        self.range_calls += 1
+        return {
+            "hrvSummaries": [
+                {
+                    "calendarDate": "2026-11-14",
+                    "weeklyAvg": 33,
+                    "lastNightAvg": 30,
+                    "lastNight5MinHigh": 45,
+                    "status": "LOW",
+                    "feedbackPhrase": "HRV_LOW_7",
+                },
+                {
+                    "calendarDate": "2026-11-15",
+                    "weeklyAvg": 33,
+                    "lastNightAvg": 31,
+                    "status": "BALANCED",
+                },
+            ]
+        }
+
+    def get_hrv_data(self, date_str):
+        self.daily_calls += 1
+        return {}
+
+
+def test_hrv_range_uses_one_request_without_readings(tmp_path: Path):
+    storage = CsvStorage(tmp_path)
+    client = RangeHrvClient()
+    extract_hrv(
+        client,
+        storage,
+        datetime(2026, 11, 14, tzinfo=timezone.utc),
+        datetime(2026, 11, 15, tzinfo=timezone.utc),
+        include_readings=False,
+    )
+    assert client.range_calls == 1
+    assert client.daily_calls == 0
+    nightly = _read(tmp_path, "hrv_nightly")
+    assert len(nightly) == 2
+    assert set(nightly["hrvStatus"]) == {"LOW", "BALANCED"}
+
+
+class StepsClient:
+    def get_daily_steps(self, start, end):
+        return [
+            {"calendarDate": "2026-11-15", "totalSteps": 11417,
+             "totalDistance": 9888, "stepGoal": 11470},
+            {"calendarDate": "2026-11-16", "totalSteps": 7492,
+             "totalDistance": 6272, "stepGoal": 11470},
+        ]
+
+
+def test_steps_range_single_call(tmp_path: Path):
+    from gar.extraction.daily import extract_steps
+
+    storage = CsvStorage(tmp_path)
+    rows = extract_steps(
+        StepsClient(),
+        storage,
+        datetime(2026, 11, 15, tzinfo=timezone.utc),
+        datetime(2026, 11, 16, tzinfo=timezone.utc),
+    )
+    assert rows == 2
+    frame = _read(tmp_path, "steps_daily")
+    assert len(frame) == 2
+    assert frame.iloc[0]["totalSteps"] == 11417
+
+
 class StressClient:
     def get_stress_data(self, date_str):
         return {

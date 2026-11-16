@@ -48,6 +48,7 @@ DEDUP_KEYS: dict[str, tuple[str, ...] | None] = {
     "body_battery_events": ("eventId",),
     "body_composition": ("timestamp",),
     "daily_summary": ("date",),
+    "steps_daily": ("date",),
     "readiness": ("date",),
     "training_status": ("date", "deviceId"),
     "max_metrics": ("date",),

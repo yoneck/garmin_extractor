@@ -47,8 +47,11 @@ BIOMETRIC_TABLES = [
     "body_battery_samples",
     "body_composition",
     "daily_summary",
+    "steps_daily",
     "readiness",
     "training_status",
+    "scores",
+    "subjective",
 ]
 
 
