@@ -21,6 +21,16 @@ DATASETS = [
     "daily_summary",
     "readiness",
     "training_status",
+    "thresholds",
+    "zone_definitions",
+    "personal_records",
+    "race_predictions",
+    "scores",
+    "workout_adherence",
+    "weather",
+    "strength_sets",
+    "activity_stream_stats",
+    "subjective",
 ]
 
 

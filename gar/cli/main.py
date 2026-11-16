@@ -84,6 +84,14 @@ def _resolve_env_path() -> Path:
     return project_root / ".env"
 
 
+def _default_data_dir() -> Path:
+    """Data dir for non-sync subcommands (env first, no login required)."""
+    from gar.utils.config import load_from_env
+
+    config = load_from_env(_resolve_env_path(), strict=False)
+    return Path(config.get("GARMIN_DATA_DIR") or Path("garmin_data"))
+
+
 def _skip_ids(storage, activity_ids: list[str]) -> set[str]:
     """Return the set of activity ids that already have depth data."""
     already: set[str] = set()
@@ -166,6 +174,12 @@ def _resolve_window(args, state) -> tuple[datetime, datetime]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("log", "subjective"):
+        from gar.input.subjective import main as log_main
+
+        return log_main(argv[1:], data_dir=_default_data_dir())
+
     args = _build_parser().parse_args(argv)
 
     from gar.utils.config import load_from_env
