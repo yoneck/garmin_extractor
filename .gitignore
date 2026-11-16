@@ -23,3 +23,6 @@ PUBLISH_INSTRUCTIONS.md
 
 # Local working notes and plans (never published)
 dev/
+
+# Transient lock files
+*.lock

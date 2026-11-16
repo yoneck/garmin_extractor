@@ -27,8 +27,8 @@ def test_sync_id_writes_per_activity_table():
     with tempfile.TemporaryDirectory() as tmp:
         storage = CsvStorage(Path(tmp))
         n = storage.sync_id("activity_laps", [
-            {"activityId": "111", "lapStartTime": "2024-01-01T00:00:00"},
-            {"activityId": "222", "lapStartTime": "2024-01-01T00:00:00"},
+            {"activityId": "111", "lapIndex": 1, "lapStartTime": "2024-01-01T00:00:00"},
+            {"activityId": "222", "lapIndex": 1, "lapStartTime": "2024-01-01T00:00:00"},
         ])
         assert n == 2
         assert (Path(tmp) / "activity_laps" / "activity_laps.csv").exists()
