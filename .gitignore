@@ -20,3 +20,6 @@ htmlcov/
 .venv/
 venv/
 PUBLISH_INSTRUCTIONS.md
+
+# Local working notes and plans (never published)
+dev/
