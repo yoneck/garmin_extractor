@@ -40,9 +40,10 @@ def _parse_ts(value) -> int:
     return 0
 
 
-def _days(start_date: datetime, end_date: datetime):
+def _days(start_date: datetime, end_date: datetime, today: date | None = None):
     """Inclusive, never beyond today (local date)."""
-    today = date.today()
+    if today is None:
+        today = date.today()
     current = start_date.date() if isinstance(start_date, datetime) else start_date
     last = end_date.date() if isinstance(end_date, datetime) else end_date
     if last > today:
@@ -124,9 +125,15 @@ def _sample_rows(sleep_id: str, data: dict) -> list[dict]:
     return rows
 
 
-def extract_sleep(client, storage, start_date: datetime, end_date: datetime):
+def extract_sleep(
+    client,
+    storage,
+    start_date: datetime,
+    end_date: datetime,
+    today: date | None = None,
+):
     total = 0
-    for day in _days(start_date, end_date):
+    for day in _days(start_date, end_date, today=today):
         date_str = day.strftime("%Y-%m-%d")
         try:
             data = client.get_sleep_data(date_str) or {}

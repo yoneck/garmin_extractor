@@ -16,9 +16,10 @@ from typing import Any
 
 import duckdb
 
+from gar.context.privacy import redact_text
+
 from gar.lake.db import connect, lake_path, table_exists
-from gar.lake.ingest import discover_datasets, ingest_all
-from gar.lake.derive import derive_all
+from gar.context.privacy import redact_text
 
 TOKEN_CHAR_RATIO = 4
 
@@ -28,6 +29,9 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _ensure_lake(data_dir: Path) -> duckdb.DuckDBPyConnection:
+    from gar.lake.ingest import discover_datasets, ingest_all
+    from gar.lake.derive import derive_all
+
     path = lake_path(data_dir)
     con = connect(data_dir)
     if table_exists(con, "fact_daily") and con.execute(
@@ -391,9 +395,11 @@ def build_context(
         # Write individual files.
         for section in package.sections:
             (out_dir / f"{section.name}.md").write_text(
-                section.body + "\n", encoding="utf-8"
+                redact_text(section.body) + "\n", encoding="utf-8"
             )
-        (out_dir / "context.md").write_text(package.render(), encoding="utf-8")
+        (out_dir / "context.md").write_text(
+            redact_text(package.render()), encoding="utf-8"
+        )
         manifest = {
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "days": days,

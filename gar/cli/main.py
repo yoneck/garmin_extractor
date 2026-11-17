@@ -243,6 +243,10 @@ def main(argv: list[str] | None = None) -> int:
         from gar.recommendations.ledger import main as rec_main
 
         return rec_main(argv[1:], data_dir=_default_data_dir())
+    if argv and argv[0] == "migrate":
+        from gar.migrate.csv_to_lake import main as migrate_main
+
+        return migrate_main(argv[1:], data_dir=_default_data_dir())
     if argv and argv[0] == "sync":
         return main(argv[1:])
     if argv and argv[0] == "report" and len(argv) > 1 and argv[1] == "coverage":

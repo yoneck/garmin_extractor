@@ -1,5 +1,5 @@
 """Sleep extraction tests using a fake client (no network)."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -122,6 +122,7 @@ def test_sleep_does_not_request_future_days(tmp_path: Path):
         storage,
         datetime(2026, 11, 16, tzinfo=timezone.utc),
         datetime(2026, 11, 25, tzinfo=timezone.utc),
+        today=date(2026, 11, 16),
     )
     assert len(client.calls) == 1
     assert client.calls[0] <= datetime.now().strftime("%Y-%m-%d")
