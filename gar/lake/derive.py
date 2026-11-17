@@ -245,6 +245,10 @@ def derive_activities(con: duckdb.DuckDBPyConnection) -> int:
     fact["start_utc"] = _timestamps(raw.loc[fact.index], "timestamp").dt.tz_localize("UTC")
     if "start_local" in fact.columns:
         fact["start_local"] = pd.to_datetime(fact["start_local"], errors="coerce")
+    # Garmin returns 0 when no HR sensor was used; treat as missing.
+    for column in ("avg_hr_bpm", "max_hr_bpm"):
+        if column in fact.columns:
+            fact[column] = pd.to_numeric(fact[column], errors="coerce").replace(0, pd.NA)
     # Garmin speeds arrive in km/h from the activities list endpoint.
     if "avg_speed_kmh" in fact.columns:
         fact["avg_speed_mps"] = pd.to_numeric(fact["avg_speed_kmh"], errors="coerce") / 3.6
