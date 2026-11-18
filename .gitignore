@@ -26,3 +26,12 @@ dev/
 
 # Transient lock files
 *.lock
+
+# Lake and generated artifacts
+*.duckdb
+*.duckdb.wal
+garmin_data/quarantine/
+garmin_data/state/
+garmin_data/parquet/
+garmin_data/csv/
+garmin_data/context/
